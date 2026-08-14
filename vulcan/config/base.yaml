@@ -1,0 +1,180 @@
+# VULCAN — base configuration.
+# All values here are defaults; override them in a per-environment YAML file.
+
+# ── LLM provider ───────────────────────────────────────────────────────────────
+# One block selects the model family for the whole run. Any step may override
+# `provider`, `model`, `base_url` or `reasoning` — see docs/providers.md.
+#
+#   provider: openai              GPT models via the OpenAI API
+#   provider: anthropic           Claude models via the Anthropic Messages API
+#   provider: gemini              Gemini models via the Google Generative AI API
+#   provider: openai_compatible   Any OpenAI-compatible server: vLLM, SGLang,
+#                                 Ollama, llama.cpp, TGI, LM Studio. This is how
+#                                 open-weight models (Qwen, Llama, Mistral,
+#                                 DeepSeek, …) are served.
+#
+# The API key is read from the environment (or a local .env file); see
+# .env.example. Never put a real key in a config file.
+llm:
+  provider: openai
+  model: gpt-4o
+  # base_url: http://localhost:8000/v1   # required for openai_compatible
+  request_timeout: 600
+  max_retries: 3
+  # reasoning: {effort: medium}          # ask the model to reason where supported
+  # capabilities: {}                     # pin per-model behaviour, see docs/providers.md
+  # extra_body: {}                       # passed through to the provider verbatim
+
+# ── Defaults (inherited by all steps unless overridden) ────────────────────────
+# `model` is deliberately NOT set here. A step's model resolves as
+#   steps.<step>.model  ->  defaults.model  ->  "" (use the client's own model)
+# so setting it here would override `llm.model` for every step and send, say,
+# an OpenAI model name to Anthropic. Set `llm.model` instead, and use
+# `steps.<step>.model` only to route one stage to a different model.
+defaults:
+  temperature: 0
+  max_tokens: 16000
+  parallel_workers: 20
+  max_retries: 10
+  empty_response_retries: 10
+  thinking_model: false
+
+# ── Per-step configuration ─────────────────────────────────────────────────────
+# Each step key maps to a dict deep-merged with `defaults` at runtime.
+#
+# Temperature guide:
+#   0    = deterministic (verification, code checking, graph analysis)
+#   0.2  = low creativity (JSON repair, function sample generation)
+#   0.7  = moderate creativity (trajectory responses)
+#   0.8  = high creativity (initial state generation, diversity)
+#
+# Note: models that reason (OpenAI o-series and gpt-5, current Claude, Gemini
+# 2.5) ignore or reject `temperature`. The provider layer drops it for those
+# models rather than failing the request.
+
+steps:
+  # ── Phase 1: Environment simulation ────────────────────────────────────────
+
+  generate_tools:
+    temperature: 0
+    max_tokens: 32000                    # code generation needs large output
+
+  verify_tools:
+    temperature: 0
+    max_tokens: 32000                    # may need to rewrite full code
+    max_fix_iterations: 5             # verify → fix → re-verify loop
+
+  assemble_environment:
+    temperature: 0
+    max_tokens: 65000                    # combines multiple API classes
+
+  debug_environment:
+    temperature: 0
+    max_tokens: 65000
+    max_fix_iterations: 15                   # test/fix rounds; dominant Phase-1 cost
+    max_test_generation_retries: 5              # retries if the test code itself crashes
+
+  generate_states:
+    temperature: 0.8                     # high diversity across initial states
+    max_tokens: 32000
+    num_states: 5000
+    min_list_length: 5                   # min values for list/array fields
+
+  sample_arguments:
+    temperature: 0.2                     # needs correct types, low creativity
+    max_tokens: 32000
+
+  # ── Phase 2: Graph construction & sequence selection ───────────────────────
+
+  build_graph:
+    temperature: 0
+    max_tokens: 2048                     # short structured output
+
+  plan_sequences:                          # deterministic — no model needed
+    max_tools_per_sequence: 5
+    max_multipath_tools: 15
+    implicit_edge_weight: 0.01
+    sequences_per_category: 15000
+    turns_per_sequence: "2,3,4"
+    enable_multipath: false              # disabled — slow on dense graphs
+
+  score_sequences:
+    temperature: 0
+    max_tokens: 16000
+    thinking_model: true                 # reasoning model for quality judgment
+
+  # ── Phase 3: Task & trajectory generation ─────────────────────────────────
+
+  execute_sequences:                          # deterministic — no model needed
+    states_per_sequence: 2
+    max_samples_per_category: 50000
+
+  generate_queries:
+    temperature: 0
+    max_tokens: 32000
+    max_attempts: 5
+    # Few-shot query generation (opt-in). When `enabled` is false (default),
+    # generation is zero-shot. Examples may be inline or loaded from a file or
+    # directory, keyed (most general -> most specific) by:
+    #   "*"                                          every flow
+    #   "tools_only" | "with_user_and_policy" | "with_user"   environment type
+    #   "sequence_tools_only" | "multipath_with_user_and_policy" | …  exact flow
+    #   "<category_name>"                            one category
+    # A record pools examples from every matching key, then randomly samples
+    # `num_examples` of them (seeded per record for reproducibility).
+    few_shot:
+      enabled: false
+      num_examples: 0          # 0 = use all matching examples; N = random sample
+      examples_path: null      # JSON/JSONL file, or directory of per-category files
+      examples: {}             # inline: list, or dict keyed as documented above
+
+  # The tool-call format is chosen with the `tool_call_format` key (or a per-input override):
+  #   fc         native function calling (provider tool-calling API)
+  #   thinking   text tool calls from a reasoning model
+  #   prompting  text tool calls, no reasoning; the assistant explains, then
+  #              emits <tool_call>{...}</tool_call>; results return as a user
+  #              <tool_response>...</tool_response>; ends with <answer>...</answer>
+  # Unset falls back to "thinking" when thinking_model is true, else "fc".
+  #
+  # `fc` needs a provider that returns native tool calls. Self-hosted servers
+  # must be started for it (vLLM: --enable-auto-tool-choice --tool-call-parser);
+  # otherwise use `prompting`, which works on any model. See docs/providers.md.
+  generate_trajectories:
+    temperature: 0.7                     # moderate creativity for responses
+    max_tokens: 2048                     # per turn, not per trajectory
+    max_turns: 100
+    # tool_call_format: native                          # native | reasoning | tagged
+
+    # Simulated user, used only by the dynamic environment types. These are read
+    # flat off steps.generate_trajectories — do not nest them under a `user_agent:` key, which
+    # nothing reads. Each falls back to the corresponding agent-level value.
+    simulated_user_temperature: 0.0                # deterministic, so policy violations
+                                         # come from the agent, not the user
+    simulated_user_max_tokens: 32768
+    simulated_user_name: user_sim
+    # simulated_user_model: <model>                # defaults to the step's own model
+
+    # Reasoning ("thinking") style only. Also read flat off steps.generate_trajectories.
+    max_tool_calls_per_turn: 30             # tool-call rounds before the next query
+
+  judge_trajectories:
+    temperature: 0
+    max_tokens: 16000
+
+  # ── Phase 4: Selection & reconstruction ───────────────────────────────────
+
+  export_dataset:
+    min_score: 8                # score threshold for inclusion
+    require_task_completed: true         # task_completed must be true
+
+# ── Verification ──────────────────────────────────────────────────────────────
+# Optional pass/fail hook inside the listed stages — not the judge_trajectories judge.
+# It truncates input at 3000 characters and caps verdicts at 512 tokens, so its
+# rejections are unreliable on large items. See docs/pipeline_stages.md.
+verification:
+  enabled: false
+  verify_steps:
+    - generate_tools
+    - verify_tools
+    - generate_trajectories
+    - judge_trajectories

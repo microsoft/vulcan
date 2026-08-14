@@ -1,0 +1,84 @@
+# Quickstart: a full end-to-end run over the bundled 8-tool example catalog.
+#
+#   vulcan --env quickstart --pipeline
+#
+# Configs are resolved from ./configs/ first, then from the packaged defaults,
+# and are deep-merged over the packaged base.yaml.
+# Precedence: steps.<stage> > defaults > base.yaml.
+#
+# API keys are never set in a config file. The provider reads them from the
+# environment or a local .env file — see .env.example.
+
+environment: quickstart
+environment_type: tools_only
+
+# ── Provider ───────────────────────────────────────────────────────────────
+# Swap this block to change model family; nothing else in the file changes.
+#
+#   {provider: openai,            model: gpt-4o}
+#   {provider: anthropic,         model: claude-sonnet-5}
+#   {provider: gemini,            model: gemini-2.5-pro}
+#   {provider: openai_compatible, model: Qwen/Qwen3-32B,
+#    base_url: http://localhost:8000/v1}
+llm:
+  provider: openai
+  model: gpt-4o
+
+input:
+  catalog: examples/ticket_api.jsonl
+output_base: ./outputs/quickstart
+
+categories:
+  - ticket_api
+
+terminate_tools: []     # tools whose call ends a trajectory; this catalog has none
+
+defaults:
+  temperature: 0
+  parallel_workers: 8
+  max_retries: 10
+  empty_response_retries: 10
+
+# Sized to finish quickly and cheaply rather than to produce a large dataset.
+# Raise generate_states.num_states and execute_sequences.max_samples_per_category
+# once a run completes successfully.
+steps:
+  verify_tools:
+    max_fix_iterations: 3
+
+  debug_environment:
+    max_fix_iterations: 6
+
+  # One model call per initial state. These states are the only source of
+  # data diversity, so this is the first knob to raise for a real run.
+  generate_states:
+    num_states: 5
+    min_list_length: 2
+
+  # turns_per_sequence is TURNS per sequence, not subgraph size; "1" yields no multi-turn data.
+  plan_sequences:
+    turns_per_sequence: "2,3,4"
+    max_tools_per_sequence: 9
+    sequences_per_category: 120
+    enable_multipath: false
+
+  execute_sequences:
+    states_per_sequence: 1
+    max_samples_per_category: 5
+
+  generate_queries:
+    temperature: 0.1
+
+  # `prompting` works with every model and needs no server-side tool-calling
+  # support. Switch to `fc` when your provider returns native tool calls.
+  generate_trajectories:
+    tool_call_format: tagged
+    max_turns: 20
+    max_tokens: 32000
+
+  judge_trajectories:
+    max_tokens: 16000
+
+  export_dataset:
+    min_score: 8
+    require_task_completed: true

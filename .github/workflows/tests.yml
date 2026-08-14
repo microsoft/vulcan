@@ -1,0 +1,62 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # No provider extra: the suite must pass without any SDK installed, and
+      # without a network or an API key. Installing one would hide a regression
+      # in the optional-import paths.
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: Package imports with no provider SDK
+        run: |
+          python -c "import vulcan, vulcan.llm, vulcan.steps"
+          python -m vulcan.cli --list-steps
+
+      - name: Shipped configs load
+        run: |
+          python - <<'PY'
+          from vulcan.config import load_config
+          from vulcan.environment import get_environment
+          for name in ("quickstart", "hotel_policy"):
+              cfg = load_config(name)
+              env = get_environment(name, cfg)
+              cats = env.get_categories()
+              assert cats, f"{name}: no categories"
+              for c in cats:
+                  assert env.get_api_catalog(c), f"{name}/{c}: no tools"
+              # a mixed-provider config breaks if this is ever set
+              assert not (cfg.get("defaults") or {}).get("model"), f"{name} sets defaults.model"
+              print(f"{name}: {cats}")
+          PY

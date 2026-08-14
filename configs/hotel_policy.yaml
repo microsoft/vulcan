@@ -1,0 +1,76 @@
+# A policy-driven domain with a simulated user.
+#
+#   vulcan --env hotel_policy --pipeline
+#
+# This is the config to copy when your domain has rules an agent must follow.
+# `with_user_and_policy` switches on two things the static configs do not use:
+#   * a simulated user agent, which drives the conversation turn by turn
+#   * the category's `policy_rules`, injected into both the agent prompt and
+#     the judge, so trajectories are scored on policy compliance
+#
+# The policy text lives inline on the category record in the input catalog —
+# see examples/hotel_booking.jsonl. A policy in a separate file is never loaded.
+
+environment: hotel_policy
+environment_type: with_user_and_policy
+
+llm:
+  provider: openai
+  model: gpt-4o
+
+input:
+  catalog: examples/hotel_booking.jsonl
+output_base: ./outputs/hotel_policy
+
+categories:
+  - hotel_booking
+
+terminate_tools: []
+
+defaults:
+  temperature: 0
+  parallel_workers: 8
+  max_retries: 10
+  empty_response_retries: 10
+
+steps:
+  verify_tools:
+    max_fix_iterations: 3
+
+  debug_environment:
+    max_fix_iterations: 8
+
+  generate_states:
+    num_states: 10
+    min_list_length: 3
+
+  # 10 tools means build_graph costs 10*9 = 90 model calls for this category.
+  plan_sequences:
+    turns_per_sequence: "2,3,4"
+    max_tools_per_sequence: 6
+    sequences_per_category: 200
+    enable_multipath: false
+
+  execute_sequences:
+    states_per_sequence: 2
+    max_samples_per_category: 20
+
+  generate_queries:
+    temperature: 0.2
+
+  generate_trajectories:
+    tool_call_format: native
+    max_turns: 40
+    # The simulated user runs on its own temperature. Keep it deterministic so
+    # policy violations come from the agent, not the user. These keys are read
+    # flat off steps.generate_trajectories; nesting them under `user_agent:` does nothing.
+    # simulated_user_model defaults to the step's own model.
+    simulated_user_temperature: 0.0
+    simulated_user_name: user_sim
+
+  judge_trajectories:
+    max_tokens: 16000
+
+  export_dataset:
+    min_score: 8
+    require_task_completed: true

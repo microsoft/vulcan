@@ -1,0 +1,102 @@
+# VULCAN smoke-test config: a tiny end-to-end run over the bundled example
+# catalog. Read by `python -m vulcan.cli --env mock_test`.
+#
+# Two layers, deep-merged: base.yaml first, then this file.
+# Precedence: steps.<stage> > defaults > base.yaml.
+# API keys are never set here — the provider reads them from the environment
+# (or a local .env file); see .env.example.
+
+environment: mock_test
+environment_type: tools_only   # | with_user_and_policy | with_user
+
+# Which provider serves this run. `provider` picks the client (openai,
+# anthropic, gemini, openai_compatible); `model` is the model ID it is given.
+# Any step may override `model` under `steps:`. See docs/configuration.md.
+llm:
+  provider: openai
+  model: gpt-4o
+
+# load_config expands `~` and resolves a relative path first against the current
+# working directory, then against the repo root — so these stay portable.
+# Absolute paths also work.
+input:
+  catalog: examples/ticket_api.jsonl   # JSONL, one category per line — see examples/README.md
+output_base: ./outputs/mock_test
+
+categories:          # a list of category names. build_graph costs n*(n-1) calls per category
+  - ticket_api
+
+terminate_tools: []    # tools whose call ends a trajectory; the example catalog has none
+
+defaults:
+  # `model` is intentionally unset: setting it here would override `llm.model`
+  # for every step and send that model name to whichever provider is configured.
+  temperature: 0
+  parallel_workers: 8
+  max_retries: 10
+  empty_response_retries: 10
+
+steps:
+  # Verify -> fix -> re-verify each generated API class.
+  verify_tools:
+    max_fix_iterations: 3
+
+  # Generate tests for the env class, execute, fix; sets environment_ready.
+  debug_environment:
+    max_fix_iterations: 6
+
+  # One LLM call per initial state; these states are the only source of data diversity.
+  generate_states:
+    num_states: 5
+    min_list_length: 2
+
+  # Build multi-turn sequences. turns_per_sequence is TURNS per sequence, not size; "1" = no multi-turn.
+  # enable_multipath adds fork-merge (diamond) regions of the tool graph, whose
+  # queries admit several valid tool orderings; it is slow on dense graphs.
+  plan_sequences:
+    turns_per_sequence: "2,3,4"
+    max_tools_per_sequence: 9
+    max_multipath_tools: 15
+    sequences_per_category: 120
+    enable_multipath: false
+
+  # Execute each sequence against the env class; max_samples caps every stage after it.
+  execute_sequences:
+    states_per_sequence: 1
+    max_samples_per_category: 5
+
+  # Executed chains -> natural-language queries, one per turn.
+  generate_queries:
+    temperature: 0.1
+    few_shot:
+      enabled: false
+
+  # Multi-turn conversation against the live environment; style sets the tool-call format.
+  generate_trajectories:
+    tool_call_format: tagged
+    max_turns: 20
+    max_tokens: 32000
+
+  # LLM-as-judge: scores 1-10 and task_completed. This is the gate on the SFT set.
+  judge_trajectories:
+    model: gpt-4o
+    max_tokens: 16000
+
+  # Filter judged trajectories and emit training records.
+  export_dataset:
+    min_score: 8
+    require_task_completed: true
+
+# Optional pass/fail hook inside the listed stages — not the judge_trajectories judge.
+# Off: it truncates input at 3000 chars and caps verdicts at 512 tokens, so its
+# rejections are unreliable. See docs/pipeline_stages.md.
+verification:
+  enabled: false
+  model: gpt-4o
+  max_tokens: 512
+  temperature: 0.0
+  verify_steps:
+    - generate_tools
+    - verify_tools
+    - generate_trajectories
+    - judge_trajectories

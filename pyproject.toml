@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulcan-datagen"
+version = "0.1.0"
+description = "Generate multi-turn tool-calling training data from API specifications"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = [
+    "synthetic-data",
+    "tool-calling",
+    "function-calling",
+    "agent",
+    "training-data",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "aiohttp>=3.9",        # HTTP transport for the openai_compatible provider
+    "aiofiles>=23.1",      # async incremental JSONL writes (PipelineRunner)
+    "pyyaml>=6.0",         # config loading (base.yaml + per-env YAML)
+    "pydantic>=2.0",       # step I/O schemas (schemas/step_io.py)
+    "numpy>=1.24",         # tool execution + graph sampling
+    "tqdm>=4.65",          # progress bars
+    "networkx>=3.0",       # subgraph extraction (graph_construction)
+    "json_repair>=0.25",   # robust repair of model-emitted JSON
+]
+
+[project.optional-dependencies]
+# Closed-source providers. Install only the ones you use.
+openai = ["openai>=1.40"]
+anthropic = ["anthropic>=0.40"]
+gemini = ["google-genai>=0.3"]
+# Open-source / self-hosted models (vLLM, SGLang, Ollama, llama.cpp, TGI) are
+# served over an OpenAI-compatible endpoint and need no extra dependency beyond
+# aiohttp, which is already a core requirement.
+all = ["openai>=1.40", "anthropic>=0.40", "google-genai>=0.3"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+vulcan = "vulcan.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/microsoft/vulcan"
+Repository = "https://github.com/microsoft/vulcan"
+Issues = "https://github.com/microsoft/vulcan/issues"
+
+[tool.setuptools.packages.find]
+include = ["vulcan*"]
+
+[tool.setuptools.package-data]
+vulcan = ["config/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+# There are no async tests: coroutines are driven with `asyncio.run()` inside
+# ordinary sync tests, so pytest-asyncio is not a dependency. If you add an
+# `async def test_*`, add pytest-asyncio to the dev extra and set
+# `asyncio_mode = "auto"` here at the same time.
